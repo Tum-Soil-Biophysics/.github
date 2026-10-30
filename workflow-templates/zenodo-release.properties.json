@@ -1,0 +1,6 @@
+{
+  "name": "Zenodo DOI on release (SBE)",
+  "description": "Every release of a public repository gets a Zenodo DOI in the TUM Soil Biophysics community.",
+  "iconName": "octicon tag",
+  "categories": ["Automation"]
+}
