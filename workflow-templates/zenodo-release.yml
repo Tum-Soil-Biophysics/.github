@@ -1,0 +1,30 @@
+# Zenodo DOI on release (SBE). Do not edit: the logic lives in Tum-Soil-Biophysics/.github.
+# - Publishing a release of a PUBLIC repository creates a Zenodo DOI in the SBE community.
+# - Private repositories and pre-releases are skipped.
+# - Actions > "Zenodo DOI on release" > Run workflow: archive an existing release again,
+#   or tick "dry run" to only check .zenodo.json (works in private repositories too).
+name: Zenodo DOI on release
+
+on:
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+      dry_run:
+        description: "Dry run: only check, publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  zenodo:
+    uses: Tum-Soil-Biophysics/.github/.github/workflows/zenodo-release.yml@main
+    with:
+      tag: ${{ github.event.release.tag_name || inputs.tag }}
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    secrets: inherit
