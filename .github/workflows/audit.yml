@@ -1,0 +1,45 @@
+# Weekly check: every PUBLIC repository of Tum-Soil-Biophysics must call the central
+# Zenodo workflow. Missing ones are listed in one issue in this repository (you get a notification).
+# Exceptions (e.g. code that already has a personal Zenodo DOI) go in audit-exceptions.txt.
+name: Audit Zenodo automation
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays 06:17 UTC
+  workflow_dispatch:
+  push:
+    paths: [audit-exceptions.txt, .github/workflows/audit.yml]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check public repositories
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORG: ${{ github.repository_owner }}
+        run: |
+          missing=""
+          for repo in $(gh api "orgs/$ORG/repos?type=public&per_page=100" --paginate --jq '.[] | select(.archived|not) | .name'); do
+            grep -qxF "$repo" audit-exceptions.txt 2>/dev/null && continue
+            found=no
+            for f in $(gh api "repos/$ORG/$repo/contents/.github/workflows" --jq '.[].path' 2>/dev/null); do
+              if gh api "repos/$ORG/$repo/contents/$f" --jq .content | base64 -d | grep -q "Tum-Soil-Biophysics/.github/.github/workflows/zenodo-release.yml"; then found=yes; break; fi
+            done
+            [ "$found" = no ] && missing="$missing- [$repo](https://github.com/$ORG/$repo)\n"
+          done
+          title="Public repositories without Zenodo automation"
+          num=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$missing" ]; then
+            body=$(printf "These public repositories do not call the central Zenodo workflow, so a release will **not** get a DOI:\n\n${missing}\nFix: in the repository, add \`.github/workflows/zenodo-release.yml\` (Actions > New workflow > \"Zenodo DOI on release (SBE)\") and a filled \`.zenodo.json\`. Or add the name to \`audit-exceptions.txt\`.")
+            if [ -n "$num" ]; then gh issue edit "$num" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+            printf "Missing:\n$missing"
+          else
+            [ -n "$num" ] && gh issue close "$num" --comment "All public repositories now use the central Zenodo workflow."
+            echo "All public repositories are covered."
+          fi
