@@ -1,0 +1,100 @@
+# Central release-to-Zenodo workflow for all Tum-Soil-Biophysics repositories.
+# Repositories do not copy this logic; they call it with a short file (see workflow-templates/).
+# A fix made here applies to every repository at once.
+#
+# What it does for the calling repository:
+# - Skips private repositories and pre-releases (nothing is published before acceptance).
+# - Uploads the source archive of the release tag plus any files attached to the release.
+# - First release: new Zenodo record (new DOI) in the community "TUM Soil Biophysics" (tum-sbe).
+# - Later releases: new version of the same record.
+# - Writes the DOI into the release notes.
+# - dry_run: checks .zenodo.json and the Zenodo connection, publishes nothing.
+name: Zenodo DOI (central)
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to archive"
+        type: string
+        required: true
+      required_assets:
+        description: "Optional file pattern that must be attached to the release (e.g. *.exe)"
+        type: string
+        default: ""
+      dry_run:
+        type: boolean
+        default: false
+    secrets:
+      ZENODO_TOKEN:
+        required: false
+
+jobs:
+  zenodo:
+    if: ${{ inputs.dry_run || (!github.event.repository.private && (github.event_name == 'workflow_dispatch' || !github.event.release.prerelease)) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Get the central scripts
+        uses: actions/checkout@v5
+        with:
+          repository: Tum-Soil-Biophysics/.github
+          path: .sbe-central
+
+      - name: Download files attached to the release
+        run: |
+          mkdir -p "${RUNNER_TEMP}/assets"
+          gh release download "$TAG" --dir "${RUNNER_TEMP}/assets" || echo "No release with tag $TAG or no attached files."
+          ls -l "${RUNNER_TEMP}/assets"
+          if [ -n "$REQUIRED" ] && ! compgen -G "${RUNNER_TEMP}/assets/${REQUIRED}" >/dev/null; then
+            echo "::error::No file matching ${REQUIRED} is attached to release $TAG. Attach it, then run this workflow by hand with tag $TAG."
+            exit 1
+          fi
+        env:
+          REQUIRED: ${{ inputs.required_assets }}
+
+      - name: Pack the source code of the tag
+        run: |
+          NAME="${GITHUB_REPOSITORY#*/}"
+          REF="refs/tags/${TAG}"
+          git rev-parse -q --verify "$REF" >/dev/null || REF=HEAD
+          git archive --format=zip --prefix="${NAME}-${TAG}/" -o "${RUNNER_TEMP}/${NAME}-${TAG}.zip" "$REF"
+          echo "ARCHIVE=${RUNNER_TEMP}/${NAME}-${TAG}.zip" >> "$GITHUB_ENV"
+
+      - name: Publish on Zenodo
+        id: zenodo
+        run: |
+          pip install --quiet requests
+          shopt -s nullglob
+          python .sbe-central/scripts/zenodo_release.py "$ARCHIVE" "${RUNNER_TEMP}"/assets/*
+        env:
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+          ZENODO_SANDBOX: ${{ vars.ZENODO_SANDBOX }}
+          DRY_RUN: ${{ inputs.dry_run }}
+
+      - name: Add the DOI to the release notes
+        if: ${{ !inputs.dry_run }}
+        run: |
+          gh release view "$TAG" --json body -q .body > "${RUNNER_TEMP}/old.md"
+          python3 - "$DOI" "$CONCEPT_DOI" <<'EOF'
+          import os, sys
+          tmp = os.environ["RUNNER_TEMP"]
+          body = open(f"{tmp}/old.md", encoding="utf-8").read()
+          body = body.split("\n\n---\n**DOI (this version):**")[0].rstrip()
+          body += (f"\n\n---\n**DOI (this version):** https://doi.org/{sys.argv[1]}\n"
+                   f"**DOI (all versions, always the latest):** https://doi.org/{sys.argv[2]}\n")
+          open(f"{tmp}/notes.md", "w", encoding="utf-8").write(body)
+          EOF
+          gh release edit "$TAG" --notes-file "${RUNNER_TEMP}/notes.md"
+        env:
+          DOI: ${{ steps.zenodo.outputs.doi }}
+          CONCEPT_DOI: ${{ steps.zenodo.outputs.concept_doi }}
